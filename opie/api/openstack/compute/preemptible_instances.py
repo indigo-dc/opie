@@ -13,13 +13,17 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nova.api.openstack.compute import servers
+"""Preemptible instances extension."""
+
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 
+from opie.api.openstack.compute.schemas import preemptible_instances as \
+                                                            schema_preemptible
 
-authorize = extensions.extension_authorizer('compute', 'preemptible-instances')
-soft_authorize = extensions.soft_extension_authorizer('compute', 'preemptible-instances')
+ALIAS = "os-preemptible-instances"
+ATTRIBUTE_NAME = "preemptible"
+authorize = extensions.os_compute_soft_authorizer(ALIAS)
 
 
 class SpotController(object):
@@ -27,11 +31,15 @@ class SpotController(object):
         return {"preemptible": []}
 
 
-class Controller(servers.Controller):
+class Controller(wsgi.Controller):
     def _add_preemptible_info(self, req, servers):
         for server in servers:
             db_server = req.get_db_instance(server['id'])
-            server['preemptible'] = db_server.system_metadata.get('preemptible', False)
+            if db_server.system_metadata.get('preemptible'):
+                is_preemptible = True
+            else:
+                is_preemptible = False
+            server[ATTRIBUTE_NAME] = is_preemptible
 
     def _show(self, req, resp_obj):
         if 'server' in resp_obj.obj:
@@ -41,36 +49,40 @@ class Controller(servers.Controller):
     @wsgi.extends
     def show(self, req, resp_obj, id):
         context = req.environ['nova.context']
-        if soft_authorize(context):
+        if authorize(context):
             self._show(req, resp_obj)
 
     @wsgi.extends
     def detail(self, req, resp_obj):
         context = req.environ['nova.context']
-        if 'servers' in resp_obj.obj and soft_authorize(context):
+        if 'servers' in resp_obj.obj and authorize(context):
             servers = resp_obj.obj['servers']
             self._add_preemptible_info(req, servers)
 
 
-
-class Preemptible(extensions.ExtensionDescriptor):
-    """PreemptibleInstances Support."""
+class Preemptible(extensions.V21APIExtensionBase):
+    """Preemptible Instances Support."""
 
     name = "PreemptibleInstances"
-    alias = "os-spot-instances"
-    namespace = "http://docs.openstack.org/compute/ext/preemptible/api/v1.0"
-    updated = "2015-06-10T00:00:00Z"
+    alias = ALIAS
+    version = 1
 
     def get_resources(self):
-        resources = []
+        resources = [
+            extensions.ResourceExtension(ALIAS, SpotController())
+        ]
 
-        res = extensions.ResourceExtension(
-                'os-preemptible-instances',
-                SpotController())
-        resources.append(res)
         return resources
 
     def get_controller_extensions(self):
-        controller = Controller(self.ext_mgr)
+        controller = Controller()
         extension = extensions.ControllerExtension(self, 'servers', controller)
         return [extension]
+
+    # NOTE(gmann): This function is not supposed to use 'body_deprecated_param'
+    # parameter as this is placed to handle scheduler_hint extension for V2.1.
+    def server_create(self, server_dict, create_kwargs, body_deprecated_param):
+        create_kwargs['preemptible'] = server_dict.get(ATTRIBUTE_NAME)
+
+    def get_server_create_schema(self, version):
+        return schema_preemptible.server_create

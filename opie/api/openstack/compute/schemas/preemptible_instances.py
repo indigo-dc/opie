@@ -14,8 +14,6 @@
 
 from nova.api.validation import parameter_types
 
-
 server_create = {
     'preemptible': parameter_types.boolean,
 }
-
