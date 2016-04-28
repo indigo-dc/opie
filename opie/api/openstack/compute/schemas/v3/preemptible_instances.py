@@ -16,6 +16,6 @@ from nova.api.validation import parameter_types
 
 
 server_create = {
-    'spot': parameter_types.boolean,
+    'preemptible': parameter_types.boolean,
 }
 

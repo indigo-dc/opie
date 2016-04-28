@@ -18,25 +18,25 @@ from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 
 
-authorize = extensions.extension_authorizer('compute', 'spot')
-soft_authorize = extensions.soft_extension_authorizer('compute', 'spot')
+authorize = extensions.extension_authorizer('compute', 'preemptible-instances')
+soft_authorize = extensions.soft_extension_authorizer('compute', 'preemptible-instances')
 
 
 class SpotController(object):
     def index(self, req):
-        return {"spot": []}
+        return {"preemptible": []}
 
 
 class Controller(servers.Controller):
-    def _add_spot_info(self, req, servers):
+    def _add_preemptible_info(self, req, servers):
         for server in servers:
             db_server = req.get_db_instance(server['id'])
-            server['spot'] = db_server.system_metadata.get('spot', False)
+            server['preemptible'] = db_server.system_metadata.get('preemptible', False)
 
     def _show(self, req, resp_obj):
         if 'server' in resp_obj.obj:
             server = resp_obj.obj['server']
-            self._add_spot_info(req, [server])
+            self._add_preemptible_info(req, [server])
 
     @wsgi.extends
     def show(self, req, resp_obj, id):
@@ -49,23 +49,23 @@ class Controller(servers.Controller):
         context = req.environ['nova.context']
         if 'servers' in resp_obj.obj and soft_authorize(context):
             servers = resp_obj.obj['servers']
-            self._add_spot_info(req, servers)
+            self._add_preemptible_info(req, servers)
 
 
 
-class Spot(extensions.ExtensionDescriptor):
-    """Spot Instances Support."""
+class Preemptible(extensions.ExtensionDescriptor):
+    """PreemptibleInstances Support."""
 
-    name = "Spot Instances"
-    alias = "os-spot"
-    namespace = "http://docs.openstack.org/compute/ext/spot/api/v1.0"
+    name = "PreemptibleInstances"
+    alias = "os-spot-instances"
+    namespace = "http://docs.openstack.org/compute/ext/preemptible/api/v1.0"
     updated = "2015-06-10T00:00:00Z"
 
     def get_resources(self):
         resources = []
 
         res = extensions.ResourceExtension(
-                'os-spot',
+                'os-preemptible-instances',
                 SpotController())
         resources.append(res)
         return resources
