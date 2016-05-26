@@ -1,2 +1,5 @@
-pbr>=0.6,!=0.7,<1.0
-oslo.config
+pbr>=1.6
+WebOb>=1.2.3
+oslo.config>=2.3.0
+oslo.log>=1.8.0 # Apache-2.0
+oslo.utils!=2.6.0,>=2.0.0 # Apache-2.0
