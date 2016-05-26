@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
-
+# Copyright 2016 Spanish National Research Council - CSIC
+#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -12,17 +12,20 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-"""
-test_opie
-----------------------------------
-
-Tests for `opie` module.
-"""
-
+from opie.api.openstack.compute import preemptible_instances as preempt_api
 from opie.tests import base
 
+import webob.exc
 
-class TestOpie(base.TestCase):
 
-    def test_something(self):
-        pass
+class TestOpieAPI(base.TestCase):
+    def setUp(self):
+        super(TestOpieAPI, self).setUp()
+        self.controller = preempt_api.SpotController()
+
+        self.req = None
+
+    def test_index(self):
+        self.assertRaises(webob.exc.HTTPNotImplemented,
+                          self.controller.index,
+                          self.req)
