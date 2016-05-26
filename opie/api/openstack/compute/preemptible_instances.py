@@ -20,6 +20,7 @@ from nova.api.openstack import wsgi
 
 from opie.api.openstack.compute.schemas import preemptible_instances as \
                                                             schema_preemptible
+import webob.exc
 
 ALIAS = "os-preemptible-instances"
 ATTRIBUTE_NAME = "preemptible"
@@ -28,7 +29,7 @@ authorize = extensions.os_compute_soft_authorizer(ALIAS)
 
 class SpotController(object):
     def index(self, req):
-        return {"preemptible": []}
+        raise webob.exc.HTTPNotImplemented()
 
 
 class Controller(wsgi.Controller):
