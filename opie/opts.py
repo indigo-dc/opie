@@ -1,6 +1,4 @@
-# -*- coding: utf-8 -*-
-
-# Copyright 2014
+# Copyright 2016 Spanish National Research Council (CSIC)
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -14,11 +12,11 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import opie.scheduler.filter_scheduler
 
-from oslo.config import cfg
 
-
-def parse_args(argv, default_config_files=None):
-    cfg.CONF(argv[1:],
-             project='opie',
-             default_config_files=default_config_files)
+def list_opts():
+    return [
+        ('preemptible_instances_scheduler',
+         opie.scheduler.filter_scheduler.opts)
+    ]
