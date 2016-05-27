@@ -4,4 +4,4 @@ source = opie
 omit = opie/tests/*,opie/openstack/*
 
 [report]
-ignore-errors = True
+ignore_errors = True
