@@ -40,10 +40,10 @@ LOG = logging.getLogger(__name__)
 
 class HostStatePartial(nova_host_manager.HostState):
     def __init__(self, *args, **kwargs):
-        super(HostStatePartial, self).__init__(*args, **kwargs)
         self.normal_instances = {}
-        self.spot_instances = {}
+        self.preemptible_instances = {}
         self._instances = {}
+        super(HostStatePartial, self).__init__(*args, **kwargs)
 
     @property
     def instances(self):
@@ -52,11 +52,11 @@ class HostStatePartial(nova_host_manager.HostState):
     @instances.setter
     def instances(self, instances):
         for instance in instances.values():
-            if instance.uuid in self.instances:
+            if instance.uuid in self._instances:
                 continue
 
             if instance.system_metadata.get("preemptible"):
-                self.spot_instances[instance.uuid] = instance
+                self.preemptible_instances[instance.uuid] = instance
                 self._unconsume_from_instance(instance)
             else:
                 self.normal_instances[instance.uuid] = instance
@@ -81,10 +81,11 @@ class HostStatePartial(nova_host_manager.HostState):
         self.num_instances -= 1
 
     def __repr__(self):
-        return ("(%s, %s) ram:%s disk:%s io_ops:%s instances:%s (spot:%s)" %
+        return ("(%s, %s) ram:%s disk:%s io_ops:%s "
+                "instances:%s (preemptible:%s)" %
                 (self.host, self.nodename, self.free_ram_mb, self.free_disk_mb,
                  self.num_io_ops, self.num_instances,
-                 len(self.spot_instances)))
+                 len(self.preemptible_instances)))
 
 
 class HostManager(nova_host_manager.HostManager):
