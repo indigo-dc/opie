@@ -133,21 +133,21 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
 
     def detect_overcommit(self, host):
         """Detect overcommit of resources, according to configured ratios."""
-        if host.free_ram_mb < 0:
-            ram_limit = host.total_usable_ram_mb * CONF.ram_allocation_ratio
-            used_ram = host.total_usable_ram_mb + (-host.free_ram_mb)
-            if used_ram > ram_limit:
-                return True
+        ram_limit = host.total_usable_ram_mb * host.ram_allocation_ratio
+        used_ram = host.total_usable_ram_mb - host.free_ram_mb
+        if used_ram > ram_limit:
+            return True
 
-        if host.free_disk_mb < 0:
-            disk_limit = host.total_usable_disk_gb * CONF.disk_allocation_ratio
-            used_disk = host.total_usable_disk_gb - host.free_disk_mb / 1024.
-            if used_disk > disk_limit:
-                return True
+        disk_limit = host.total_usable_disk_gb * CONF.disk_allocation_ratio
+        used_disk = host.total_usable_disk_gb - host.free_disk_mb / 1024.
+        if used_disk > disk_limit:
+            return True
 
-        cpus_limit = host.vcpus_total * CONF.cpu_allocation_ratio
+        cpus_limit = host.vcpus_total * host.cpu_allocation_ratio
         if host.vcpus_used > cpus_limit:
             return True
+
+        return False
 
     def _schedule(self, context, request_spec, filter_properties):
         """Returns a list of hosts that meet the required specs,
