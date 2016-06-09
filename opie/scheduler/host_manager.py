@@ -133,19 +133,29 @@ class HostManager(nova_host_manager.HostManager):
             node = compute.hypervisor_hostname
             state_key = (host, node)
             host_state = self.host_state_map.get(state_key)
-            host_state_partial = self.host_state_map_partial.get(state_key)
-            if host_state and host_state_partial:
+            if host_state:
                 host_state.update_from_compute_node(compute)
             else:
                 host_state = self.host_state_cls(host, node, compute=compute)
-                host_state_partial = HostStatePartial(host, node,
-                                                      compute=compute)
                 self.host_state_map[state_key] = host_state
-                self.host_state_map_partial[state_key] = host_state_partial
+
+            if partial:
+                host_state_partial = self.host_state_map_partial.get(state_key)
+                if host_state_partial:
+                    host_state_partial.update_from_compute_node(compute)
+                else:
+                    host_state_partial = HostStatePartial(host, node,
+                                                          compute=compute)
+                    self.host_state_map_partial[state_key] = host_state_partial
+
             # We force to update the aggregates info each time a new request
             # comes in, because some changes on the aggregates could have been
             # happening after setting this field for the first time
-            for aux in (host_state, host_state_partial):
+            if partial:
+                iter_over = (host_state, host_state_partial)
+            else:
+                iter_over = (host_state,)
+            for aux in iter_over:
                 aux.aggregates = [self.aggs_by_id[agg_id] for agg_id in
                                   self.host_aggregates_map[
                                       aux.host]]
@@ -161,7 +171,8 @@ class HostManager(nova_host_manager.HostManager):
             LOG.info(_LI("Removing dead compute node %(host)s:%(node)s "
                          "from scheduler"), {'host': host, 'node': node})
             del self.host_state_map[state_key]
-            del self.host_state_map_partial[state_key]
+            if partial:
+                del self.host_state_map_partial[state_key]
 
         if partial:
             return self.host_state_map_partial.itervalues()
