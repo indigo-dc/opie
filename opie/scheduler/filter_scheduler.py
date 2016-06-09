@@ -273,7 +273,7 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
         # NOTE(aloga): this should be removed from here. We should get it from
         # the instance, so that we could change how a preemptible instance is
         # identified.
-        instance_properties = request_spec['instance_properties']
-        if instance_properties['system_metadata'].get('preemptible'):
+        instance_properties = request_spec.get('instance_properties', {})
+        if instance_properties.get('system_metadata', {}).get('preemptible'):
             return True
         return False
