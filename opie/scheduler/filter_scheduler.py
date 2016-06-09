@@ -127,6 +127,17 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
         """Select preemptible instances to be killed for the request."""
         preemptibles = [i for i in host.instances.values()
                  if i.system_metadata.get("preemptible")]
+        if not preemptibles:
+            # Log the details but don't put those into the reason since
+            # we don't want to give away too much information about our
+            # actual environment.
+            LOG.debug('Need to terminate preemptible instances, but there'
+                      'are no preemptible instances on %(host)s' %
+                      {'host': host})
+
+            reason = _('Cannot terminate enough preemptible instances.')
+            raise exception.NoValidHost(reason=reason)
+
         # FIXME(aloga): This needs to be fixed, as we are assuming that killing
         # one instance will free enough resources
         return [preemptibles.pop()]
