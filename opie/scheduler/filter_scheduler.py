@@ -127,27 +127,38 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
         """Select preemptible instances to be killed for the request."""
         preemptibles = [i for i in host.instances.values()
                  if i.system_metadata.get("preemptible")]
+        if not preemptibles:
+            # Log the details but don't put those into the reason since
+            # we don't want to give away too much information about our
+            # actual environment.
+            LOG.debug('Need to terminate preemptible instances, but there'
+                      'are no preemptible instances on %(host)s' %
+                      {'host': host})
+
+            reason = _('Cannot terminate enough preemptible instances.')
+            raise exception.NoValidHost(reason=reason)
+
         # FIXME(aloga): This needs to be fixed, as we are assuming that killing
         # one instance will free enough resources
         return [preemptibles.pop()]
 
     def detect_overcommit(self, host):
         """Detect overcommit of resources, according to configured ratios."""
-        if host.free_ram_mb < 0:
-            ram_limit = host.total_usable_ram_mb * CONF.ram_allocation_ratio
-            used_ram = host.total_usable_ram_mb + (-host.free_ram_mb)
-            if used_ram > ram_limit:
-                return True
+        ram_limit = host.total_usable_ram_mb * host.ram_allocation_ratio
+        used_ram = host.total_usable_ram_mb - host.free_ram_mb
+        if used_ram > ram_limit:
+            return True
 
-        if host.free_disk_mb < 0:
-            disk_limit = host.total_usable_disk_gb * CONF.disk_allocation_ratio
-            used_disk = host.total_usable_disk_gb - host.free_disk_mb / 1024.
-            if used_disk > disk_limit:
-                return True
+        disk_limit = host.total_usable_disk_gb * CONF.disk_allocation_ratio
+        used_disk = host.total_usable_disk_gb - host.free_disk_mb / 1024.
+        if used_disk > disk_limit:
+            return True
 
-        cpus_limit = host.vcpus_total * CONF.cpu_allocation_ratio
+        cpus_limit = host.vcpus_total * host.cpu_allocation_ratio
         if host.vcpus_used > cpus_limit:
             return True
+
+        return False
 
     def _schedule(self, context, request_spec, filter_properties):
         """Returns a list of hosts that meet the required specs,
@@ -273,7 +284,7 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
         # NOTE(aloga): this should be removed from here. We should get it from
         # the instance, so that we could change how a preemptible instance is
         # identified.
-        instance_properties = request_spec['instance_properties']
-        if instance_properties['system_metadata'].get('preemptible'):
+        instance_properties = request_spec.get('instance_properties', {})
+        if instance_properties.get('system_metadata', {}).get('preemptible'):
             return True
         return False
