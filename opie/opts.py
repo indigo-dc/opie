@@ -14,10 +14,13 @@
 # under the License.
 
 import opie.scheduler.filter_scheduler
+import opie.scheduler.weights.preemptible
 
 
 def list_opts():
     return [
+        ('DEFAULT',
+         opie.scheduler.weights.preemptible.preemptible_weight_opts),
         ('preemptible_instances_scheduler',
-         opie.scheduler.filter_scheduler.opts)
+         opie.scheduler.filter_scheduler.opts),
     ]
