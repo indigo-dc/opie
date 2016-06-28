@@ -1,12 +1,12 @@
-opie: OpenStack Preemptible Instances Extensions
-================================================
+# opie: OpenStack Preemptible Instances Extensions
 
-opie is the materialization of the `preemptible instances extension
-<https://blueprints.launchpad.net/openstack/?searchtext=preemptible-instances>`_
+opie is the materialization of the [preemptible instances extension][1]
 serving as a reference implementation. This package provides a set of
-pluggable extensions for `OpenStack Compute (nova) <http://openstack.org>`_
+pluggable extensions for [OpenStack Compute (nova)](http://openstack.org)
 making possible to execute premptible instances using a modified filter
 scheduler.
+
+[1]: https://blueprints.launchpad.net/openstack/?searchtext=preemptible-instances
 
 opie is completely pluggable, with the exception of a modification in the
 internal nova compute API that needs to be applied manually.
@@ -28,4 +28,4 @@ available at:
    http://docs.openstack.org/developer/nova/
 
 For information on how to contribute to Nova, please see the contents of the
-CONTRIBUTING.rst file.
+CONTRIBUTING.md file.
