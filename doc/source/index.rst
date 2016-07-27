@@ -4,16 +4,24 @@
    contain the root `toctree` directive.
 
 Welcome to opie's documentation!
-========================================================
+================================
+
+opie is the materialization of the `preemptible instances extension
+<https://blueprints.launchpad.net/openstack/?searchtext=preemptible-instances>`_
+serving as a reference implementation. This package provides a set of pluggable
+extensions for `OpenStack Compute (nova) <http://openstack.org>`_ making
+possible to execute premptible instances using a modified filter scheduler.
+
+opie is completely pluggable, with the exception of a modification in the
+internal nova compute API that needs to be applied manually.
 
 Contents:
 
 .. toctree::
    :maxdepth: 2
 
-   readme
    installation
-   usage
+   configuration
 
 Indices and tables
 ==================
