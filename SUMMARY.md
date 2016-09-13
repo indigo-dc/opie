@@ -2,6 +2,5 @@ Summary
 =======
 
 * [About Opie](README.md)
-* [How to contribute](CONTRIBUTING.md)
-* [Hacking and style guide](HACKING.md)
-* [Documentation](https://opie.readthedocs.org)
+* [Developer guide](CONTRIBUTING.md)
+* [Deployment guide](Deployment.md)
