@@ -27,6 +27,7 @@ from oslo_utils import timeutils
 from nova.i18n import _LI, _LW  # noqa
 from nova import objects
 from nova.scheduler import host_manager as nova_host_manager
+import six
 
 CONF = cfg.CONF
 CONF.import_opt('scheduler_tracks_instance_changes',
@@ -160,7 +161,7 @@ class HostManager(nova_host_manager.HostManager):
                 aux.aggregates = [self.aggs_by_id[agg_id] for agg_id in
                                   self.host_aggregates_map[
                                       aux.host]]
-                aux.update_service(dict(service.iteritems()))
+                aux.update_service(dict(six.iteritems(service)))
                 self._add_instance_info(context, compute, aux)
 
             seen_nodes.add(state_key)
@@ -176,6 +177,6 @@ class HostManager(nova_host_manager.HostManager):
                 del self.host_state_map_partial[state_key]
 
         if partial:
-            return self.host_state_map_partial.itervalues()
+            return six.itervalues(self.host_state_map_partial)
         else:
-            return self.host_state_map.itervalues()
+            return six.itervalues(self.host_state_map)
