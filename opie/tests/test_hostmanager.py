@@ -27,12 +27,7 @@ from nova.tests.unit import matchers
 from nova.tests.unit.scheduler import fakes
 from nova.tests.unit.scheduler import test_host_manager \
         as nova_test_host_manager
-
-# The nova HostManager tests are checking that the apporpiate logging messages
-# are emited for some warnings and failures. The tests are making an
-# mox.StubOutWithMock on the host_manager.LOG.warning methods, that is not the
-# LOG object used by opie, so we need to replace the nova one with the opie one
-nova_host_manager.LOG = host_manager.LOG
+from nova.tests import uuidsentinel as uuids
 
 
 class OpieHostManagerTestCase(nova_test_host_manager.HostManagerTestCase):
@@ -77,11 +72,74 @@ class OpieHostManagerTestCase(nova_test_host_manager.HostManagerTestCase):
         # Check that .service is set properly
         for i in range(4):
             compute_node = fakes.COMPUTE_NODES[i]
-            host = compute_node['host']
-            node = compute_node['hypervisor_hostname']
+            host = compute_node.host
+            node = compute_node.hypervisor_hostname
             state_key = (host, node)
             self.assertEqual(host_states_map[state_key].service,
                     obj_base.obj_to_primitive(fakes.get_service_by_host(host)))
+        self.assertEqual(host_states_map[('host1', 'node1')].free_ram_mb,
+                         512)
+        # 511GB
+        self.assertEqual(host_states_map[('host1', 'node1')].free_disk_mb,
+                         524288)
+        self.assertEqual(host_states_map[('host2', 'node2')].free_ram_mb,
+                         1024)
+        # 1023GB
+        self.assertEqual(host_states_map[('host2', 'node2')].free_disk_mb,
+                         1048576)
+        self.assertEqual(host_states_map[('host3', 'node3')].free_ram_mb,
+                         3072)
+        # 3071GB
+        self.assertEqual(host_states_map[('host3', 'node3')].free_disk_mb,
+                         3145728)
+        self.assertThat(
+                nova.objects.NUMATopology.obj_from_db_obj(
+                        host_states_map[('host3', 'node3')].numa_topology
+                    )._to_dict(),
+                matchers.DictMatches(fakes.NUMA_TOPOLOGY._to_dict()))
+        self.assertEqual(host_states_map[('host4', 'node4')].free_ram_mb,
+                         8192)
+        # 8191GB
+        self.assertEqual(host_states_map[('host4', 'node4')].free_disk_mb,
+                         8388608)
+
+    @mock.patch('opie.scheduler.host_manager.LOG')
+    @mock.patch('nova.objects.ServiceList.get_by_binary')
+    @mock.patch('nova.objects.ComputeNodeList.get_all')
+    @mock.patch('nova.objects.InstanceList.get_by_host')
+    def test_get_all_host_states(self, mock_get_by_host, mock_get_all,
+                                 mock_get_by_binary, mock_log):
+        mock_get_by_host.return_value = nova.objects.InstanceList()
+        mock_get_all.return_value = fakes.COMPUTE_NODES
+        mock_get_by_binary.return_value = fakes.SERVICES
+        context = 'fake_context'
+
+        self.host_manager.get_all_host_states(context)
+        host_states_map = self.host_manager.host_state_map
+        self.assertEqual(len(host_states_map), 4)
+
+        calls = [
+#            mock.call(
+#                "Host %(hostname)s has more disk space than database "
+#                "expected (%(physical)s GB > %(database)s GB)",
+#                {'physical': 3333, 'database': 3072, 'hostname': 'node3'}
+#            ),
+            mock.call(
+                "No compute service record found for host %(host)s",
+                {'host': 'fake'}
+            )
+        ]
+        self.assertEqual(calls, mock_log.warning.call_args_list)
+
+        # Check that .service is set properly
+        for i in range(4):
+            compute_node = fakes.COMPUTE_NODES[i]
+            host = compute_node.host
+            node = compute_node.hypervisor_hostname
+            state_key = (host, node)
+            self.assertEqual(host_states_map[state_key].service,
+                    obj_base.obj_to_primitive(fakes.get_service_by_host(host)))
+
         self.assertEqual(host_states_map[('host1', 'node1')].free_ram_mb,
                          512)
         # 511GB
@@ -191,93 +249,116 @@ class OpieHostManagerChangedNodesTestCase(nova_test_host_manager.
 class OpieHostStateTestCase(nova_test.NoDBTestCase):
     """Test case for Opie HostStatePartial class."""
 
-    # update_from_compute_node() and consume_from_instance() are tested
+    # update_from_compute_node() and consume_from_request() are tested
     # in HostManagerTestCase.test_get_all_host_states()
 
+    @mock.patch('nova.utils.synchronized',
+                side_effect=lambda a: lambda f: lambda *args: f(*args))
     @mock.patch('nova.virt.hardware.get_host_numa_usage_from_instance')
+    @mock.patch('nova.objects.Instance')
     @mock.patch('nova.virt.hardware.numa_fit_instance_to_host')
-    @mock.patch('nova.virt.hardware.instance_topology_from_instance')
     @mock.patch('nova.virt.hardware.host_topology_and_format_from_host')
     def test_stat_consumption_from_instance(self, host_topo_mock,
-                                            instance_topo_mock,
                                             numa_fit_mock,
-                                            numa_usage_mock):
-        fake_numa_topology = mock.Mock()
-        host_topo_mock.return_value = ('fake-host-topology', None)
-        numa_usage_mock.return_value = 'fake-consumed-once'
-        numa_fit_mock.return_value = 'fake-fitted-once'
-        instance_topo_mock.return_value = fake_numa_topology
-        instance = dict(root_gb=0, ephemeral_gb=0, memory_mb=0, vcpus=0,
-                        project_id='12345', vm_state=vm_states.BUILDING,
-                        task_state=task_states.SCHEDULING, os_type='Linux',
-                        uuid='fake-uuid',
-                        numa_topology=fake_numa_topology,
-                        pci_requests={'requests': []})
+                                            instance_init_mock,
+                                            numa_usage_mock,
+                                            sync_mock):
+        fake_numa_topology = nova.objects.InstanceNUMATopology(
+            cells=[nova.objects.InstanceNUMACell()])
+        fake_host_numa_topology = mock.Mock()
+        fake_instance = nova.objects.Instance(numa_topology=fake_numa_topology)
+        host_topo_mock.return_value = (fake_host_numa_topology, True)
+        numa_usage_mock.return_value = fake_host_numa_topology
+        numa_fit_mock.return_value = fake_numa_topology
+        instance_init_mock.return_value = fake_instance
+        spec_obj = nova.objects.RequestSpec(
+            instance_uuid=uuids.instance,
+            flavor=nova.objects.Flavor(root_gb=0, ephemeral_gb=0, memory_mb=0,
+                                  vcpus=0),
+            numa_topology=fake_numa_topology,
+            pci_requests=nova.objects.InstancePCIRequests(requests=[]))
         host = host_manager.HostStatePartial("fakehost", "fakenode")
 
         self.assertIsNone(host.updated)
-        host.consume_from_instance(instance)
-        numa_fit_mock.assert_called_once_with('fake-host-topology',
+        host.consume_from_request(spec_obj)
+        numa_fit_mock.assert_called_once_with(fake_host_numa_topology,
                                               fake_numa_topology,
                                               limits=None, pci_requests=None,
                                               pci_stats=None)
-        numa_usage_mock.assert_called_once_with(host, instance)
-        self.assertEqual('fake-consumed-once', host.numa_topology)
-        self.assertEqual('fake-fitted-once', instance['numa_topology'])
+        numa_usage_mock.assert_called_once_with(host, fake_instance)
+        sync_mock.assert_called_once_with(("fakehost", "fakenode"))
+        self.assertEqual(fake_host_numa_topology, host.numa_topology)
         self.assertIsNotNone(host.updated)
 
-        instance = dict(root_gb=0, ephemeral_gb=0, memory_mb=0, vcpus=0,
-                        project_id='12345', vm_state=vm_states.ACTIVE,
-                        task_state=task_states.RESIZE_PREP, os_type='Linux',
-                        uuid='fake-uuid',
-                        numa_topology=fake_numa_topology)
-        numa_usage_mock.return_value = 'fake-consumed-twice'
-        numa_fit_mock.return_value = 'fake-fitted-twice'
-        host.consume_from_instance(instance)
-        self.assertEqual('fake-fitted-twice', instance['numa_topology'])
+        second_numa_topology = nova.objects.InstanceNUMATopology(
+            cells=[nova.objects.InstanceNUMACell()])
+        spec_obj = nova.objects.RequestSpec(
+            instance_uuid=uuids.instance,
+            flavor=nova.objects.Flavor(root_gb=0, ephemeral_gb=0, memory_mb=0,
+                                  vcpus=0),
+            numa_topology=second_numa_topology,
+            pci_requests=nova.objects.InstancePCIRequests(requests=[]))
+        second_host_numa_topology = mock.Mock()
+        numa_usage_mock.return_value = second_host_numa_topology
+        numa_fit_mock.return_value = second_numa_topology
 
+        host.consume_from_request(spec_obj)
         self.assertEqual(2, host.num_instances)
         self.assertEqual(2, host.num_io_ops)
         self.assertEqual(2, numa_usage_mock.call_count)
-        self.assertEqual(((host, instance),), numa_usage_mock.call_args)
-        self.assertEqual('fake-consumed-twice', host.numa_topology)
+        self.assertEqual(((host, fake_instance),), numa_usage_mock.call_args)
+        self.assertEqual(second_host_numa_topology, host.numa_topology)
         self.assertIsNotNone(host.updated)
 
+    @mock.patch('nova.utils.synchronized',
+                side_effect=lambda a: lambda f: lambda *args: f(*args))
     @mock.patch('nova.virt.hardware.get_host_numa_usage_from_instance')
+    @mock.patch('nova.objects.Instance')
     @mock.patch('nova.virt.hardware.numa_fit_instance_to_host')
-    @mock.patch('nova.virt.hardware.instance_topology_from_instance')
     @mock.patch('nova.virt.hardware.host_topology_and_format_from_host')
     def test_stat_unconsumption_from_instance(self, host_topo_mock,
-                                            instance_topo_mock,
                                             numa_fit_mock,
-                                            numa_usage_mock):
-        fake_numa_topology = mock.Mock()
-        host_topo_mock.return_value = ('fake-host-topology', None)
-        instance_topo_mock.return_value = fake_numa_topology
-
-        instance = dict(root_gb=0, ephemeral_gb=0, memory_mb=0, vcpus=0,
-                        project_id='12345', vm_state=vm_states.BUILDING,
-                        task_state=task_states.SCHEDULING, os_type='Linux',
-                        uuid='fake-uuid',
-                        numa_topology=fake_numa_topology,
-                        pci_requests={'requests': []})
+                                            instance_init_mock,
+                                            numa_usage_mock,
+                                            sync_mock):
+        fake_numa_topology = nova.objects.InstanceNUMATopology(
+            cells=[nova.objects.InstanceNUMACell()])
+        fake_host_numa_topology = mock.Mock()
+        fake_instance = nova.objects.Instance(numa_topology=fake_numa_topology)
+        host_topo_mock.return_value = (fake_host_numa_topology, True)
+        numa_usage_mock.return_value = fake_host_numa_topology
+        numa_fit_mock.return_value = fake_numa_topology
+        instance_init_mock.return_value = fake_instance
+        spec_obj = nova.objects.RequestSpec(
+            instance_uuid=uuids.instance,
+            flavor=nova.objects.Flavor(root_gb=0, ephemeral_gb=0, memory_mb=0,
+                                  vcpus=0),
+            numa_topology=fake_numa_topology,
+            pci_requests=nova.objects.InstancePCIRequests(requests=[]))
         host = host_manager.HostStatePartial("fakehost", "fakenode")
 
         self.assertIsNone(host.updated)
-        host.consume_from_instance(instance)
-        self.assertEqual(1, host.num_instances)
+        host.consume_from_request(spec_obj)
         self.assertIsNotNone(host.updated)
+        self.assertEqual(1, host.num_instances)
 
-        instance = dict(root_gb=1, ephemeral_gb=1, memory_mb=3, vcpus=4,
-                        project_id='12345', vm_state=vm_states.ACTIVE,
-                        task_state=task_states.RESIZE_PREP, os_type='Linux',
-                        uuid='fake-uuid',
-                        numa_topology=fake_numa_topology,
-                        system_metadata={"preemptible": True})
-        host.consume_from_instance(instance)
+        second_numa_topology = nova.objects.InstanceNUMATopology(
+            cells=[nova.objects.InstanceNUMACell()])
+        spec_obj = nova.objects.RequestSpec(
+            instance_uuid=uuids.instance,
+            flavor=nova.objects.Flavor(root_gb=1, ephemeral_gb=1, memory_mb=3,
+                                  vcpus=4),
+            numa_topology=second_numa_topology,
+            pci_requests=nova.objects.InstancePCIRequests(requests=[]))
+        second_host_numa_topology = mock.Mock()
+        numa_usage_mock.return_value = second_host_numa_topology
+        numa_fit_mock.return_value = second_numa_topology
+
+        host.consume_from_request(spec_obj)
         self.assertEqual(2, host.num_instances)
+        self.assertEqual(2, host.num_io_ops)
 
-        host._unconsume_from_instance(instance)
+        host._unconsume_from_request(spec_obj)
         self.assertEqual(1, host.num_instances)
         self.assertEqual(2, host.num_io_ops)
         self.assertEqual(0, host.free_disk_mb)
@@ -312,7 +393,7 @@ class OpieHostStateTestCase(nova_test.NoDBTestCase):
         self.assertIsNone(host.updated)
         # Instances consume resources in the scheduling loop
         for instance in instances.values():
-            host.consume_from_instance(instance)
+            host.consume_from_request(instance)
 
         host.instances = instances
         self.assertEqual(1, host.num_instances)
