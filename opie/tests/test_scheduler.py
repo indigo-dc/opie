@@ -12,8 +12,6 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import contextlib
-
 from opie.scheduler import filter_scheduler
 
 import mock
@@ -151,14 +149,14 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                      for i in instances]
         calls_delete = [mock.call("elevated", i) for i in instances]
 
-        with contextlib.nested(
-            mock.patch.object(self.driver.compute_api, "get"),
-            mock.patch.object(self.driver.compute_api, "delete")
-        ) as (mock_get, mock_delete):
-            mock_get.side_effect = instances
-            self.driver.terminate_preemptible_instances(ctxt, instances)
-            self.assertEqual(calls_get, mock_get.call_args_list)
-            self.assertEqual(calls_delete, mock_delete.call_args_list)
+        with mock.patch.object(self.driver.compute_api,
+                               "get") as mock_get:
+            with mock.patch.object(self.driver.compute_api,
+                                   "delete") as mock_delete:
+                mock_get.side_effect = instances
+                self.driver.terminate_preemptible_instances(ctxt, instances)
+                self.assertEqual(calls_get, mock_get.call_args_list)
+                self.assertEqual(calls_delete, mock_delete.call_args_list)
 
     @mock.patch('nova.objects.ServiceList.get_by_binary',
                 return_value=fakes.SERVICES)
