@@ -2,7 +2,7 @@ Installation
 ============
 
 opie depends on the OpenStack Compute (nova) version that you are using.
-Currently it is only tested with OpenStack Compute Liberty (version 12.0.X), so
+Currently it is only tested with OpenStack Compute Netwton (version 14), so
 you need to ensure that you are running that specific version.
 
 Installation via Ubuntu/Debian packages
@@ -92,6 +92,17 @@ the patch::
 
          def _check_auto_disk_config(self, instance=None, image=None,
                                      **extra_instance_updates):
+    --- /a/conf/scheduler.py
+    +++ /b/conf/scheduler.py
+    @@ -214,7 +214,7 @@ configuration.
+
+     sched_driver_host_mgr_opt = cfg.StrOpt("scheduler_host_manager",
+             default="host_manager",
+    -        choices=("host_manager", "ironic_host_manager"),
+    +        choices=("host_manager", "ironic_host_manager", "opie_host_manager"),
+             help="""
+     The scheduler host manager to use, which manages the in-memory picture of the
+     hosts that the scheduler uses.
     EOF
 
 And apply the patch as follows:
