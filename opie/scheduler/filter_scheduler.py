@@ -27,7 +27,6 @@ from oslo_log import log as logging
 from nova import compute
 from nova import exception
 from nova.i18n import _, _LI
-from nova import objects
 from nova import rpc
 from nova.scheduler import filter_scheduler as nova_filter_scheduler
 from nova.scheduler import scheduler_options
@@ -42,10 +41,6 @@ opts = [
 ]
 
 CONF.register_opts(opts, group="preemptible_instances_scheduler")
-
-CONF.import_opt('cpu_allocation_ratio', 'nova.scheduler.filters.core_filter')
-CONF.import_opt('ram_allocation_ratio', 'nova.scheduler.filters.ram_filter')
-CONF.import_opt('disk_allocation_ratio', 'nova.scheduler.filters.disk_filter')
 
 LOG = logging.getLogger(__name__)
 
@@ -64,14 +59,14 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
 #                CONF.preemptible.weight_classes)
 #        self.weighers = [cls() for cls in weigher_classes]
 
-    def select_destinations(self, context, request_spec, filter_properties):
+    def select_destinations(self, context, spec_obj):
         """Selects a filtered set of hosts and nodes."""
-        self.notifier.info(context, 'scheduler.select_destinations.start',
-                           dict(request_spec=request_spec))
+        self.notifier.info(
+            context, 'scheduler.select_destinations.start',
+            dict(request_spec=spec_obj.to_legacy_request_spec_dict()))
 
-        num_instances = request_spec['num_instances']
-        selected_hosts = self._schedule(context, request_spec,
-                                        filter_properties)
+        num_instances = spec_obj.num_instances
+        selected_hosts = self._schedule(context, spec_obj)
 
         # Couldn't fulfill the request_spec
         if len(selected_hosts) < num_instances:
@@ -99,16 +94,17 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
         dests = []
         for host in selected_hosts:
             if (self.detect_overcommit(host.obj) and
-                not self._is_preemptible_request(request_spec)):
+                not self._is_preemptible_request(spec_obj)):
                 preemptibles = self.select_preemptibles_from_host(host.obj,
-                                                                  request_spec)
+                                                                  spec_obj)
                 self.terminate_preemptible_instances(context, preemptibles)
 
             dests.append(dict(host=host.obj.host, nodename=host.obj.nodename,
                               limits=host.obj.limits))
 
-        self.notifier.info(context, 'scheduler.select_destinations.end',
-                           dict(request_spec=request_spec))
+        self.notifier.info(
+            context, 'scheduler.select_destinations.end',
+            dict(request_spec=spec_obj.to_legacy_request_spec_dict()))
         return dests
 
     def terminate_preemptible_instances(self, context, instances):
@@ -144,50 +140,30 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
 
     def detect_overcommit(self, host):
         """Detect overcommit of resources, according to configured ratios."""
-        ram_limit = host.total_usable_ram_mb * host.ram_allocation_ratio
+        ratio = host.ram_allocation_ratio or 1
+        ram_limit = host.total_usable_ram_mb * ratio
         used_ram = host.total_usable_ram_mb - host.free_ram_mb
         if used_ram > ram_limit:
             return True
 
-        disk_limit = host.total_usable_disk_gb * CONF.disk_allocation_ratio
+        ratio = host.disk_allocation_ratio or 1
+        disk_limit = host.total_usable_disk_gb * ratio
         used_disk = host.total_usable_disk_gb - host.free_disk_mb / 1024.
         if used_disk > disk_limit:
             return True
 
-        cpus_limit = host.vcpus_total * host.cpu_allocation_ratio
+        ratio = host.cpu_allocation_ratio or 1
+        cpus_limit = host.vcpus_total * ratio
         if host.vcpus_used > cpus_limit:
             return True
 
         return False
 
-    def _schedule(self, context, request_spec, filter_properties):
+    def _schedule(self, context, spec_obj):
         """Returns a list of hosts that meet the required specs,
         ordered by their fitness.
         """
         elevated = context.elevated()
-        instance_properties = request_spec['instance_properties']
-
-        # NOTE(danms): Instance here is still a dict, which is converted from
-        # an object. The pci_requests are a dict as well. Convert this when
-        # we get an object all the way to this path.
-        # TODO(sbauza): Will be fixed later by the RequestSpec object
-        pci_requests = instance_properties.get('pci_requests')
-        if pci_requests:
-            pci_requests = (
-                objects.InstancePCIRequests.from_request_spec_instance_props(
-                    pci_requests))
-            instance_properties['pci_requests'] = pci_requests
-
-        instance_type = request_spec.get("instance_type", None)
-
-        update_group_hosts = filter_properties.get('group_updated', False)
-
-        config_options = self._get_configuration_options()
-
-        filter_properties.update({'context': context,
-                                  'request_spec': request_spec,
-                                  'config_options': config_options,
-                                  'instance_type': instance_type})
 
         # Find our local list of acceptable hosts by repeatedly
         # filtering and weighing our options. Each time we choose a
@@ -204,7 +180,7 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
         # way we can schedule normal requests even when there is no room for
         # them without doing a retry cycle.
 
-        if self._is_preemptible_request(request_spec):
+        if self._is_preemptible_request(spec_obj):
             hosts = self._get_all_host_states(elevated, partial=False)
         else:
             hosts = self._get_all_host_states(elevated, partial=True)
@@ -212,12 +188,11 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
         hosts_full_state = self._get_all_host_states(elevated, partial=False)
 
         selected_hosts = []
-        num_instances = request_spec.get('num_instances', 1)
+        num_instances = spec_obj.num_instances
         for num in range(num_instances):
             # Filter local hosts based on requirements ...
             hosts = self.host_manager.get_filtered_hosts(hosts,
-                    filter_properties, index=num)
-
+                                                         spec_obj, index=num)
             if not hosts:
                 # Can't get any more locally.
                 break
@@ -234,7 +209,7 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
             hosts_aux = [h for h in hosts_full_state
                          if (h.host, h.nodename) in filtered_hosts]
             weighed_hosts = self.host_manager.get_weighed_hosts(hosts_aux,
-                    filter_properties)
+                                                                spec_obj)
 
             LOG.debug("Weighed %(hosts)s", {'hosts': weighed_hosts})
 
@@ -253,25 +228,20 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
             # will change for the next instance.
 
             # First update the chosen host, that is from the full state list
-            chosen_host.obj.consume_from_instance(instance_properties)
+            chosen_host.obj.consume_from_request(spec_obj)
 
             # Now consume from the partial state list
             host = chosen_host.obj.host
             node = chosen_host.obj.nodename
             state_key = (host, node)
-            filtered_hosts[state_key].consume_from_instance(
-                instance_properties
-            )
+            filtered_hosts[state_key].consume_from_request(spec_obj)
 
             # Now continue with the rest of the scheduling function
-            if update_group_hosts is True:
-                # NOTE(sbauza): Group details are serialized into a list now
-                # that they are populated by the conductor, we need to
-                # deserialize them
-                if isinstance(filter_properties['group_hosts'], list):
-                    filter_properties['group_hosts'] = set(
-                        filter_properties['group_hosts'])
-                filter_properties['group_hosts'].add(chosen_host.obj.host)
+            if spec_obj.instance_group is not None:
+                spec_obj.instance_group.hosts.append(chosen_host.obj.host)
+                # hosts has to be not part of the updates when saving
+                spec_obj.instance_group.obj_reset_changes(['hosts'])
+
         return selected_hosts
 
     def _get_all_host_states(self, context, partial=False):
@@ -280,11 +250,9 @@ class FilterScheduler(nova_filter_scheduler.FilterScheduler):
             return self.host_manager.get_all_host_partial_states(context)
         return self.host_manager.get_all_host_states(context)
 
-    def _is_preemptible_request(self, request_spec):
-        # NOTE(aloga): this should be removed from here. We should get it from
-        # the instance, so that we could change how a preemptible instance is
-        # identified.
-        instance_properties = request_spec.get('instance_properties', {})
-        if instance_properties.get('system_metadata', {}).get('preemptible'):
-            return True
-        return False
+    def _is_preemptible_request(self, spec_obj):
+        # NOTE(aloga): this is not lazy loadable
+        if not hasattr(spec_obj, "scheduler_hints"):
+                spec_obj.scheduler_hints = {}
+        hints = spec_obj.scheduler_hints.get("preemptible", [False])
+        return all([h == "True" for h in hints])

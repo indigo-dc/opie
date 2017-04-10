@@ -12,33 +12,37 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-import contextlib
-
 from opie.scheduler import filter_scheduler
 
 import mock
 from nova.compute import task_states
 from nova.compute import vm_states
 from nova import exception
+import nova.objects
 from nova.scheduler import weights
 from nova.tests.unit import fake_instance
 from nova.tests.unit.scheduler import fakes
 from nova.tests.unit.scheduler import test_filter_scheduler \
         as nova_test_filter_scheduler
 from nova.tests.unit.scheduler import test_scheduler
+from nova.tests import uuidsentinel as uuids
+from oslo_config import cfg
+
+CONF = cfg.CONF
 
 
-class FilterSchedulerTestCase(nova_test_filter_scheduler.
-                              FilterSchedulerTestCase):
-
+class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
     driver_cls = filter_scheduler.FilterScheduler
 
     def setUp(self):
-        self.flags(
-            scheduler_host_manager='opie.scheduler.host_manager.HostManager'
-        )
+        # NOTE(aloga): Cannot use this in the tests, as the option restricts us
+        # from loading any other host manager.
+        # self.flags(
+        #     scheduler_host_manager='opie_host_manager',
+        # )
+        CONF.scheduler_host_manager = 'opie_host_manager'
 
-        super(FilterSchedulerTestCase, self).setUp()
+        super(OpieFilterSchedulerTestCase, self).setUp()
 
     @mock.patch.object(filter_scheduler.FilterScheduler, 'detect_overcommit')
     @mock.patch.object(filter_scheduler.FilterScheduler, '_schedule')
@@ -48,63 +52,61 @@ class FilterSchedulerTestCase(nova_test_filter_scheduler.
         mock_detect.return_value = False
 
         with mock.patch.object(self.driver.notifier, 'info') as mock_info:
-            request_spec = {'num_instances': 1}
+            expected = {'num_instances': 1,
+                        'instance_properties': {'uuid': uuids.instance},
+                        'instance_type': {},
+                        'image': {}}
+            spec_obj = nova.objects.RequestSpec(num_instances=1,
+                                                instance_uuid=uuids.instance)
 
-            self.driver.select_destinations(self.context, request_spec, {})
+            self.driver.select_destinations(self.context, spec_obj)
 
             expected = [
                 mock.call(self.context, 'scheduler.select_destinations.start',
-                 dict(request_spec=request_spec)),
+                 dict(request_spec=expected)),
                 mock.call(self.context, 'scheduler.select_destinations.end',
-                 dict(request_spec=request_spec))]
+                 dict(request_spec=expected))]
             self.assertEqual(expected, mock_info.call_args_list)
 
-
-class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
-    driver_cls = filter_scheduler.FilterScheduler
-
-    def setUp(self):
-        self.flags(
-            scheduler_host_manager='opie.scheduler.host_manager.HostManager'
+    def test_detect_preemptible(self):
+        spec_obj = nova.objects.RequestSpec(
+            scheduler_hints = {"preemptible": [True]}
         )
 
-        super(OpieFilterSchedulerTestCase, self).setUp()
-
-    def test_detect_preemptible(self):
-        # FIXME(aloga): Right now this is almost useless. We should get the
-        # request spect from the compute API, so that if we modify it there we
-        # are able to detect it here...
-        request_spec = {
-            'instance_properties': {
-                'system_metadata': {
-                    'preemptible': True,
-                }
-            }
-        }
-
-        self.assertTrue(self.driver._is_preemptible_request(request_spec))
+        self.assertTrue(self.driver._is_preemptible_request(spec_obj))
 
     def test_detect_preemptible_false(self):
-        # FIXME(aloga): Right now this is almost useless. We should get the
-        # request spect from the compute API, so that if we modify it there we
-        # are able to detect it here...
-        request_spec = {
-            'instance_properties': {
-                'system_metadata': {
-                    'preemptible': False,
-                }
-            }
-        }
+        spec_obj = nova.objects.RequestSpec(
+            scheduler_hints = {"preemptible": [False]}
+        )
 
-        self.assertFalse(self.driver._is_preemptible_request(request_spec))
+        self.assertFalse(self.driver._is_preemptible_request(spec_obj))
+
+    def test_detect_preemptible_various_hints(self):
+        spec_obj = nova.objects.RequestSpec(
+            scheduler_hints = {"preemptible": [True, True]}
+        )
+
+        self.assertTrue(self.driver._is_preemptible_request(spec_obj))
+
+    def test_detect_preemptible_false_various_hints(self):
+        spec_obj = nova.objects.RequestSpec(
+            scheduler_hints = {"preemptible": [False, False]}
+        )
+
+        self.assertFalse(self.driver._is_preemptible_request(spec_obj))
+
+    def test_detect_preemptible_false_various_hints_contradictory(self):
+        spec_obj = nova.objects.RequestSpec(
+            scheduler_hints = {"preemptible": [False, True]}
+        )
+
+        self.assertFalse(self.driver._is_preemptible_request(spec_obj))
 
     def test_detect_preemptible_empty(self):
-        # FIXME(aloga): Right now this is almost useless. We should get the
-        # request spect from the compute API, so that if we modify it there we
-        # are able to detect it here...
-        request_spec = {}
+        spec_obj = nova.objects.RequestSpec(scheduler_hints={})
 
-        self.assertFalse(self.driver._is_preemptible_request(request_spec))
+        self.assertFalse(self.driver._is_preemptible_request(spec_obj))
 
     def test_detect_overcommit_ram(self):
         obj = fakes.FakeHostState("host", "node",
@@ -123,13 +125,12 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         self.assertTrue(self.driver.detect_overcommit(obj))
 
     def test_detect_overcommit_disk(self):
-        self.flags(disk_allocation_ratio=0.8)
         obj = fakes.FakeHostState("host", "node",
                                   {"total_usable_ram_mb": 1000,
                                    "ram_allocation_ratio": 1,
                                    "free_disk_mb": 10 * 1024,
                                    "total_usable_disk_gb": 100,
-                                   })
+                                   "disk_allocation_ratio": 0.8})
         self.assertTrue(self.driver.detect_overcommit(obj))
 
     def test_detect_not_overcommit(self):
@@ -151,14 +152,14 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                      for i in instances]
         calls_delete = [mock.call("elevated", i) for i in instances]
 
-        with contextlib.nested(
-            mock.patch.object(self.driver.compute_api, "get"),
-            mock.patch.object(self.driver.compute_api, "delete")
-        ) as (mock_get, mock_delete):
-            mock_get.side_effect = instances
-            self.driver.terminate_preemptible_instances(ctxt, instances)
-            self.assertEqual(calls_get, mock_get.call_args_list)
-            self.assertEqual(calls_delete, mock_delete.call_args_list)
+        with mock.patch.object(self.driver.compute_api,
+                               "get") as mock_get:
+            with mock.patch.object(self.driver.compute_api,
+                                   "delete") as mock_delete:
+                mock_get.side_effect = instances
+                self.driver.terminate_preemptible_instances(ctxt, instances)
+                self.assertEqual(calls_get, mock_get.call_args_list)
+                self.assertEqual(calls_delete, mock_delete.call_args_list)
 
     @mock.patch('nova.objects.ServiceList.get_by_binary',
                 return_value=fakes.SERVICES)
@@ -169,7 +170,7 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                 return_value={'numa_topology': None,
                               'pci_requests': None})
     def test_select_destinations(self, mock_get_extra, mock_get_all,
-                                            mock_by_host, mock_get_by_binary):
+                                 mock_by_host, mock_get_by_binary):
         """select_destinations is basically a wrapper around _schedule().
 
         Similar to the _schedule tests, this just does a happy path test to
@@ -188,27 +189,31 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
             selected_nodes.append(host_state.nodename)
             return [weights.WeighedHost(host_state, self.next_weight)]
 
-        self.stubs.Set(self.driver.host_manager, 'get_filtered_hosts',
-            nova_test_filter_scheduler.fake_get_filtered_hosts)
-        self.stubs.Set(weights.HostWeightHandler,
-            'get_weighed_objects', _fake_weigh_objects)
+        self.stub_out('nova.scheduler.weights.HostWeightHandler.'
+                      'get_weighed_objects', _fake_weigh_objects)
 
-        request_spec = {'instance_type': {'memory_mb': 512, 'root_gb': 512,
-                                          'ephemeral_gb': 0,
-                                          'vcpus': 1},
-                        'instance_properties': {'project_id': 1,
-                                                'root_gb': 512,
-                                                'memory_mb': 512,
-                                                'ephemeral_gb': 0,
-                                                'vcpus': 1,
-                                                'os_type': 'Linux',
-                                                'uuid': 'fake-uuid'},
-                        'num_instances': 1}
-        self.mox.ReplayAll()
-        dests = self.driver.select_destinations(self.context, request_spec, {})
-        (host, node) = (dests[0]['host'], dests[0]['nodename'])
-        self.assertEqual(host, selected_hosts[0])
-        self.assertEqual(node, selected_nodes[0])
+        spec_obj = nova.objects.RequestSpec(
+            flavor=nova.objects.Flavor(memory_mb=512,
+                                       root_gb=512,
+                                       ephemeral_gb=0,
+                                       vcpus=1),
+            project_id=1,
+            os_type='Linux',
+            instance_uuid=uuids.instance,
+            num_instances=1,
+            pci_requests=None,
+            numa_topology=None,
+            instance_group=None,
+            scheduler_hints = {"preemptible": [False]})
+
+        with mock.patch.object(self.driver.host_manager,
+                               'get_filtered_hosts') as mock_get_hosts:
+            mock_get_hosts.side_effect = (nova_test_filter_scheduler.
+                                          fake_get_filtered_hosts)
+            dests = self.driver.select_destinations(self.context, spec_obj)
+            (host, node) = (dests[0]['host'], dests[0]['nodename'])
+            self.assertEqual(host, selected_hosts[0])
+            self.assertEqual(node, selected_nodes[0])
 
     @mock.patch('nova.objects.ServiceList.get_by_binary',
                 return_value=fakes.SERVICES)
@@ -218,8 +223,9 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
     @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
                 return_value={'numa_topology': None,
                               'pci_requests': None})
-    def test_select_destinations_premptible(self, mock_get_extra, mock_get_all,
-                                            mock_by_host, mock_get_by_binary):
+    def test_select_destinations_preemptible(self, mock_get_extra,
+                                             mock_get_all, mock_by_host,
+                                             mock_get_by_binary):
         """select_destinations is basically a wrapper around _schedule().
 
         Similar to the _schedule tests, this just does a happy path test to
@@ -238,27 +244,29 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
             selected_nodes.append(host_state.nodename)
             return [weights.WeighedHost(host_state, self.next_weight)]
 
-        self.stubs.Set(self.driver.host_manager, 'get_filtered_hosts',
-            nova_test_filter_scheduler.fake_get_filtered_hosts)
-        self.stubs.Set(weights.HostWeightHandler,
-            'get_weighed_objects', _fake_weigh_objects)
+        self.stub_out('nova.scheduler.weights.HostWeightHandler.'
+                      'get_weighed_objects', _fake_weigh_objects)
 
-        request_spec = {'instance_type': {'memory_mb': 512, 'root_gb': 512,
-                                          'ephemeral_gb': 0,
-                                          'vcpus': 1},
-                        'instance_properties': {'project_id': 1,
-                                                'root_gb': 512,
-                                                'memory_mb': 512,
-                                                'ephemeral_gb': 0,
-                                                'vcpus': 1,
-                                                'os_type': 'Linux',
-                                                'uuid': 'fake-uuid',
-                                                'system_metadata': {
-                                                    'preemptible': True
-                                                }},
-                        'num_instances': 1}
-        self.mox.ReplayAll()
-        dests = self.driver.select_destinations(self.context, request_spec, {})
+        spec_obj = nova.objects.RequestSpec(
+            flavor=nova.objects.Flavor(memory_mb=512,
+                                       root_gb=512,
+                                       ephemeral_gb=0,
+                                       vcpus=1),
+            project_id=1,
+            os_type='Linux',
+            instance_uuid=uuids.instance,
+            num_instances=1,
+            pci_requests=None,
+            numa_topology=None,
+            instance_group=None,
+            scheduler_hints = {"preemptible": [True]})
+
+        with mock.patch.object(self.driver.host_manager,
+                               'get_filtered_hosts') as mock_get_hosts:
+            mock_get_hosts.side_effect = (nova_test_filter_scheduler.
+                                          fake_get_filtered_hosts)
+            dests = self.driver.select_destinations(self.context, spec_obj)
+
         (host, node) = (dests[0]['host'], dests[0]['nodename'])
         self.assertEqual(host, selected_hosts[0])
         self.assertEqual(node, selected_nodes[0])
@@ -293,32 +301,23 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
 
         mock_get_weighed_objects.side_effect = _fake_weigh_objects
 
-        request_spec = {'num_instances': 10,
-                        'instance_type': {'memory_mb': 512, 'root_gb': 512,
-                                          'ephemeral_gb': 0,
-                                          'vcpus': 1},
-                        'instance_properties': {'project_id': 1,
-                                                'root_gb': 512,
-                                                'memory_mb': 512,
-                                                'ephemeral_gb': 0,
-                                                'vcpus': 1,
-                                                'os_type': 'Linux',
-                                                'uuid': 'fake-uuid'}}
-        partial_states = list(self.driver._get_all_host_states(self.context,
-                                                               partial=True))
-        all_states = list(self.driver._get_all_host_states(self.context,
-                                                           partial=False))
-        weighed_hosts = self.driver._schedule(self.context, request_spec, {})
+        spec_obj = nova.objects.RequestSpec(
+            flavor=nova.objects.Flavor(memory_mb=512,
+                                       root_gb=512,
+                                       ephemeral_gb=0,
+                                       vcpus=1),
+            project_id=1,
+            os_type='Linux',
+            instance_uuid=uuids.instance,
+            num_instances=1,
+            pci_requests=None,
+            numa_topology=None,
+            instance_group=None,
+            scheduler_hints = {"preemptible": [False]})
 
-        # the HostState and HostStatePartial are the same objects
-        mock_get_filtered_hosts.assert_called_with(partial_states,
-                                                   mock.ANY,
-                                                   index=mock.ANY)
-        mock_get_weighed_objects.assert_called_with(mock.ANY,
-                                                    all_states,
-                                                    mock.ANY)
+        weighed_hosts = self.driver._schedule(self.context, spec_obj)
 
-        self.assertEqual(len(weighed_hosts), 10)
+        self.assertEqual(len(weighed_hosts), 1)
         for weighed_host in weighed_hosts:
             self.assertIsNotNone(weighed_host.obj)
 
@@ -352,33 +351,22 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
 
         mock_get_weighed_objects.side_effect = _fake_weigh_objects
 
-        request_spec = {'num_instances': 10,
-                        'instance_type': {'memory_mb': 512, 'root_gb': 512,
-                                          'ephemeral_gb': 0,
-                                          'vcpus': 1},
-                        'instance_properties': {'project_id': 1,
-                                                'root_gb': 512,
-                                                'memory_mb': 512,
-                                                'ephemeral_gb': 0,
-                                                'vcpus': 1,
-                                                'os_type': 'Linux',
-                                                'uuid': 'fake-uuid',
-                                                'system_metadata': {
-                                                    'preemptible': True
-                                                }}}
-        all_states = list(self.driver._get_all_host_states(self.context,
-                                                           partial=False))
-        weighed_hosts = self.driver._schedule(self.context, request_spec, {})
+        spec_obj = nova.objects.RequestSpec(
+            flavor=nova.objects.Flavor(memory_mb=512,
+                                       root_gb=512,
+                                       ephemeral_gb=0,
+                                       vcpus=1),
+            project_id=1,
+            os_type='Linux',
+            instance_uuid=uuids.instance,
+            num_instances=1,
+            pci_requests=None,
+            numa_topology=None,
+            instance_group=None,
+            scheduler_hints = {"preemptible": [False]})
+        weighed_hosts = self.driver._schedule(self.context, spec_obj)
 
-        # the HostState and HostStatePartial are the same objects
-        mock_get_filtered_hosts.assert_called_with(all_states,
-                                                   mock.ANY,
-                                                   index=mock.ANY)
-        mock_get_weighed_objects.assert_called_with(mock.ANY,
-                                                    all_states,
-                                                    mock.ANY)
-
-        self.assertEqual(len(weighed_hosts), 10)
+        self.assertEqual(len(weighed_hosts), 1)
         for weighed_host in weighed_hosts:
             self.assertIsNotNone(weighed_host.obj)
 
@@ -389,25 +377,23 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                                     "total_usable_ram_mb": 1000,
                                     "ram_allocation_ratio": 1.5})
         mock_schedule.return_value = [weights.WeighedHost(host, 1)]
-        request_spec = {'num_instances': 1,
-                        'instance_type': {'memory_mb': 512, 'root_gb': 512,
-                                          'ephemeral_gb': 0,
-                                          'vcpus': 1},
-                        'instance_properties': {'project_id': 1,
-                                                'root_gb': 512,
-                                                'memory_mb': 512,
-                                                'ephemeral_gb': 0,
-                                                'vcpus': 1,
-                                                'os_type': 'Linux',
-                                                'uuid': 'fake-uuid',
-                                                'system_metadata': {
-                                                    'preemptible': False
-                                                }}}
+        spec_obj = nova.objects.RequestSpec(
+            flavor=nova.objects.Flavor(memory_mb=512,
+                                       root_gb=512,
+                                       ephemeral_gb=0,
+                                       vcpus=1),
+            project_id=1,
+            os_type='Linux',
+            instance_uuid=uuids.instance,
+            num_instances=1,
+            pci_requests=None,
+            numa_topology=None,
+            instance_group=None,
+            scheduler_hints = {"preemptible": [False]})
         self.assertRaises(exception.NoValidHost,
                           self.driver.select_destinations,
                           self.context,
-                          request_spec,
-                          {})
+                          spec_obj)
 
     @mock.patch('opie.scheduler.filter_scheduler.FilterScheduler.'
                 'terminate_preemptible_instances')
@@ -437,21 +423,19 @@ class OpieFilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         mock_schedule.return_value = [weights.WeighedHost(host, 1)]
         mock_terminate.return_value = None
 
-        request_spec = {'num_instances': 1,
-                        'instance_type': {'memory_mb': 512, 'root_gb': 512,
-                                          'ephemeral_gb': 0,
-                                          'vcpus': 1},
-                        'instance_properties': {'project_id': 1,
-                                                'root_gb': 512,
-                                                'memory_mb': 512,
-                                                'ephemeral_gb': 0,
-                                                'vcpus': 1,
-                                                'os_type': 'Linux',
-                                                'uuid': 'fake-uuid',
-                                                'system_metadata': {
-                                                    'preemptible': False
-                                                }}}
-
-        dests = self.driver.select_destinations(self.context, request_spec, {})
+        spec_obj = nova.objects.RequestSpec(
+            flavor=nova.objects.Flavor(memory_mb=512,
+                                       root_gb=512,
+                                       ephemeral_gb=0,
+                                       vcpus=1),
+            project_id=1,
+            os_type='Linux',
+            instance_uuid=uuids.instance,
+            num_instances=1,
+            pci_requests=None,
+            numa_topology=None,
+            instance_group=None,
+            scheduler_hints = {"preemptible": [False]})
+        dests = self.driver.select_destinations(self.context, spec_obj)
         self.assertEqual(host.host, dests[0]["host"])
         self.assertEqual(host.nodename, dests[0]["nodename"])

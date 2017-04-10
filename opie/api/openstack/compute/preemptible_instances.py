@@ -18,6 +18,7 @@
 
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
+from nova.policies import servers as server_policies
 
 from opie.api.openstack.compute.schemas import preemptible_instances as \
                                                             schema_preemptible
@@ -25,7 +26,6 @@ import webob.exc
 
 ALIAS = "os-preemptible-instances"
 ATTRIBUTE_NAME = "preemptible"
-authorize = extensions.os_compute_soft_authorizer(ALIAS)
 
 
 class SpotController(object):
@@ -51,13 +51,14 @@ class Controller(wsgi.Controller):
     @wsgi.extends
     def show(self, req, resp_obj, id):
         context = req.environ['nova.context']
-        if authorize(context):
-            self._show(req, resp_obj)
+        context.can(server_policies.SERVERS % 'show')
+        self._show(req, resp_obj)
 
     @wsgi.extends
     def detail(self, req, resp_obj):
         context = req.environ['nova.context']
-        if 'servers' in resp_obj.obj and authorize(context):
+        context.can(server_policies.SERVERS % 'detail')
+        if 'servers' in resp_obj.obj:
             servers = resp_obj.obj['servers']
             self._add_preemptible_info(req, servers)
 

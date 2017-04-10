@@ -27,6 +27,8 @@ from oslo_utils import timeutils
 from nova.i18n import _LI, _LW  # noqa
 from nova import objects
 from nova.scheduler import host_manager as nova_host_manager
+from nova import utils
+import six
 
 CONF = cfg.CONF
 CONF.import_opt('scheduler_tracks_instance_changes',
@@ -57,18 +59,29 @@ class HostStatePartial(nova_host_manager.HostState):
 
             if instance.system_metadata.get("preemptible"):
                 self.preemptible_instances[instance.uuid] = instance
-                self._unconsume_from_instance(instance)
+                self._unconsume_from_request(instance)
             else:
                 self.normal_instances[instance.uuid] = instance
 
         self._instances = instances
 
-    @nova_host_manager.set_update_time_on_success
-    def _unconsume_from_instance(self, instance):
+    def _unconsume_from_request(self, spec_obj):
         """Incrementally update host state from an instance."""
-        disk_mb = (instance['root_gb'] + instance['ephemeral_gb']) * 1024
-        ram_mb = instance['memory_mb']
-        vcpus = instance['vcpus']
+
+        @utils.synchronized(self._lock_name)
+        @nova_host_manager.set_update_time_on_success
+        def _locked(self, spec_obj):
+            # Scheduler API is inherently multi-threaded as every incoming RPC
+            # message will be dispatched in it's own green thread. So the
+            # shared host state should be consumed in a consistent way to make
+            # sure its data is valid under concurrent write operations.
+            self._locked_unconsume_from_request(spec_obj)
+        return _locked(self, spec_obj)
+
+    def _locked_unconsume_from_request(self, spec_obj):
+        disk_mb = (spec_obj.root_gb + spec_obj.ephemeral_gb) * 1024
+        ram_mb = spec_obj.memory_mb
+        vcpus = spec_obj.vcpus
         self.free_ram_mb += ram_mb
         self.free_disk_mb += disk_mb
         self.vcpus_used -= vcpus
@@ -89,6 +102,11 @@ class HostStatePartial(nova_host_manager.HostState):
 
 
 class HostManager(nova_host_manager.HostManager):
+
+    # Can be overridden in a subclass
+    def host_state_cls_partial(self, host, node, **kwargs):
+        return HostStatePartial(host, node)
+
     def __init__(self):
         super(HostManager, self).__init__()
         self.host_state_map_partial = {}
@@ -134,19 +152,16 @@ class HostManager(nova_host_manager.HostManager):
             node = compute.hypervisor_hostname
             state_key = (host, node)
             host_state = self.host_state_map.get(state_key)
-            if host_state:
-                host_state.update_from_compute_node(compute)
-            else:
+            if not host_state:
                 host_state = self.host_state_cls(host, node, compute=compute)
                 self.host_state_map[state_key] = host_state
 
             if partial:
                 host_state_partial = self.host_state_map_partial.get(state_key)
-                if host_state_partial:
-                    host_state_partial.update_from_compute_node(compute)
-                else:
-                    host_state_partial = HostStatePartial(host, node,
-                                                          compute=compute)
+                if not host_state_partial:
+                    host_state_partial = self.host_state_cls_partial(
+                        host, node, compute=compute
+                    )
                     self.host_state_map_partial[state_key] = host_state_partial
 
             # We force to update the aggregates info each time a new request
@@ -160,8 +175,10 @@ class HostManager(nova_host_manager.HostManager):
                 aux.aggregates = [self.aggs_by_id[agg_id] for agg_id in
                                   self.host_aggregates_map[
                                       aux.host]]
-                aux.update_service(dict(service.iteritems()))
-                self._add_instance_info(context, compute, aux)
+                aux.update(compute,
+                           dict(service),
+                           self._get_aggregates_info(host),
+                           self._get_instance_info(context, compute))
 
             seen_nodes.add(state_key)
 
@@ -176,6 +193,6 @@ class HostManager(nova_host_manager.HostManager):
                 del self.host_state_map_partial[state_key]
 
         if partial:
-            return self.host_state_map_partial.itervalues()
+            return six.itervalues(self.host_state_map_partial)
         else:
-            return self.host_state_map.itervalues()
+            return six.itervalues(self.host_state_map)

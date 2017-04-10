@@ -24,14 +24,12 @@ from nova.api.openstack.compute import servers
 from nova.api.openstack import wsgi as os_wsgi
 from nova.compute import api as compute_api
 from nova.compute import flavors
-from nova import db
 from nova.network import manager as net_manager
 from nova import objects
 from nova import test as nova_test
 from nova.tests.unit.api.openstack import fakes as os_api_fakes
 from nova.tests.unit import fake_instance
 from nova.tests.unit.image import fake as os_image_fake
-from nova.tests.unit import policy_fixture
 from oslo_config import cfg
 from oslo_serialization import jsonutils
 import webob.exc
@@ -49,6 +47,9 @@ def return_security_group(context, instance_id, security_group_id):
 
 
 class ServersControllerCreateTest(nova_test.TestCase):
+    image_uuid = '76fa36fc-c930-4bf3-8c8a-ea2a2420deb6'
+    flavor_ref = 'http://localhost/123/flavors/3'
+
     def setUp(self):
         """Shared implementation for tests below that create instance."""
         super(ServersControllerCreateTest, self).setUp()
@@ -104,7 +105,7 @@ class ServersControllerCreateTest(nova_test.TestCase):
             instance.update(values)
             return instance
 
-        def server_update(context, instance_uuid, params):
+        def server_update_and_get_original(context, instance_uuid, params):
             inst = self.instance_cache_by_uuid[instance_uuid]
             inst.update(params)
             return (inst, inst)
@@ -115,24 +116,43 @@ class ServersControllerCreateTest(nova_test.TestCase):
         def project_get_networks(context, user_id):
             return dict(id='1', host='localhost')
 
-        os_api_fakes.stub_out_rate_limiting(self.stubs)
-        os_api_fakes.stub_out_key_pair_funcs(self.stubs)
-        os_image_fake.stub_out_image_service(self.stubs)
-        os_api_fakes.stub_out_nw_api(self.stubs)
+        os_api_fakes.stub_out_key_pair_funcs(self)
+        os_image_fake.stub_out_image_service(self)
         self.stubs.Set(uuid, 'uuid4', fake_gen_uuid)
-        self.stubs.Set(db, 'instance_add_security_group',
-                       return_security_group)
-        self.stubs.Set(db, 'project_get_networks',
-                       project_get_networks)
-        self.stubs.Set(db, 'instance_create', instance_create)
-        self.stubs.Set(db, 'instance_system_metadata_update',
-                       fake_method)
-        self.stubs.Set(db, 'instance_get', instance_get)
-        self.stubs.Set(db, 'instance_update', instance_update)
-        self.stubs.Set(db, 'instance_update_and_get_original',
-                       server_update)
+        self.stub_out('nova.db.project_get_networks', project_get_networks)
+        self.stub_out('nova.db.instance_create', instance_create)
+        self.stub_out('nova.db.instance_system_metadata_update', fake_method)
+        self.stub_out('nova.db.instance_get', instance_get)
+        self.stub_out('nova.db.instance_update', instance_update)
+        self.stub_out('nova.db.instance_update_and_get_original',
+                server_update_and_get_original)
         self.stubs.Set(net_manager.VlanManager, 'allocate_fixed_ip',
                        fake_method)
+        self.body = {
+            'server': {
+                'name': 'server_test',
+                'imageRef': self.image_uuid,
+                'flavorRef': self.flavor_ref,
+                'metadata': {
+                    'hello': 'world',
+                    'open': 'stack',
+                    },
+                'personality': [
+                    {
+                        "path": "/etc/banner.txt",
+                        "contents": "MQ==",
+                    },
+                ],
+            },
+        }
+        self.bdm = [{'delete_on_termination': 1,
+                     'device_name': 123,
+                     'volume_size': 1,
+                     'volume_id': '11111111-1111-1111-1111-111111111111'}]
+
+        self.req = os_api_fakes.HTTPRequest.blank('/fake/servers')
+        self.req.method = 'POST'
+        self.req.headers["content-type"] = "application/json"
 
     def _test_create_extra(self, params, no_image=False,
                            override_controller=None):
@@ -187,48 +207,76 @@ class PreemptibleTestV21(nova_test.TestCase):
     wsgi_api_version = os_wsgi.DEFAULT_API_VERSION
 
     def _setup_app_and_controller(self):
+        self.req = os_api_fakes.HTTPRequest.blank('')
         self.app = os_api_fakes.wsgi_app_v21(init_only=(preempt_api.ALIAS,
                                                         'servers'))
         self.controller = preempt_api.SpotController()
 
     def setUp(self):
         super(PreemptibleTestV21, self).setUp()
-        os_api_fakes.stub_out_networking(self.stubs)
-        os_api_fakes.stub_out_rate_limiting(self.stubs)
 
         self._setup_app_and_controller()
-
-        self.policy = self.useFixture(policy_fixture.RealPolicyFixture())
 
     def test_index(self):
         self.assertRaises(webob.exc.HTTPNotImplemented,
                           self.controller.index,
                           None)
 
-    def test_show_preemptible_server(self):
+    @mock.patch('nova.api.openstack.common.get_instance')
+    def test_show_preemptible_server(self, mock_get_instance):
         meta = {"preemptible": True}
-        self.stubs.Set(db, 'instance_get',
-                        os_api_fakes.fake_instance_get(system_metadata=meta))
-        self.stubs.Set(db, 'instance_get_by_uuid',
-                        os_api_fakes.fake_instance_get(system_metadata=meta))
-        req = webob.Request.blank(self.base_url + '/servers/1')
+        instance = fake_instance.fake_instance_obj(
+            self.req.environ["nova.context"],
+            expected_attrs={"system_metadata": meta})
+        mock_get_instance.return_value = instance
+
+        self.stub_out('nova.db.instance_get',
+                      os_api_fakes.fake_instance_get(system_metadata=meta))
+        self.stub_out('nova.db.instance_get_by_uuid',
+                      os_api_fakes.fake_instance_get(system_metadata=meta))
+        # NOTE(sdague): because of the way extensions work, we have to
+        # also stub out the Request compute cache with a real compute
+        # object. Delete this once we remove all the gorp of
+        # extensions modifying the server objects.
+        self.stub_out('nova.api.openstack.wsgi.Request.get_db_instance',
+                      os_api_fakes.fake_compute_get(system_metadata=meta))
+
+        req = os_api_fakes.HTTPRequest.blank(
+            self.base_url + '/servers/' + instance.uuid)
         req.headers['Content-Type'] = 'application/json'
         response = req.get_response(self.app)
         self.assertEqual(200, response.status_int)
         res_dict = jsonutils.loads(response.body)
+
         self.assertTrue(res_dict['server']['preemptible'])
 
-    def test_show_normal_server(self):
-        self.stubs.Set(db, 'instance_get',
-                        os_api_fakes.fake_instance_get())
-        self.stubs.Set(db, 'instance_get_by_uuid',
-                        os_api_fakes.fake_instance_get())
-        req = webob.Request.blank(self.base_url + '/servers/1')
+    @mock.patch('nova.api.openstack.common.get_instance')
+    def test_show_normal_server(self, mock_get_instance):
+        meta = {"preemptible": False}
+        instance = fake_instance.fake_instance_obj(
+            self.req.environ["nova.context"],
+            expected_attrs={"system_metadata": meta})
+        mock_get_instance.return_value = instance
+
+        self.stub_out('nova.db.instance_get',
+                      os_api_fakes.fake_instance_get(system_metadata=meta))
+        self.stub_out('nova.db.instance_get_by_uuid',
+                      os_api_fakes.fake_instance_get(system_metadata=meta))
+        # NOTE(sdague): because of the way extensions work, we have to
+        # also stub out the Request compute cache with a real compute
+        # object. Delete this once we remove all the gorp of
+        # extensions modifying the server objects.
+        self.stub_out('nova.api.openstack.wsgi.Request.get_db_instance',
+                      os_api_fakes.fake_compute_get(system_metadata=meta))
+
+        req = os_api_fakes.HTTPRequest.blank(
+            self.base_url + '/servers/' + instance.uuid)
         req.headers['Content-Type'] = 'application/json'
         response = req.get_response(self.app)
         self.assertEqual(200, response.status_int)
         res_dict = jsonutils.loads(response.body)
-        self.assertFalse(res_dict['server']['preemptible'])
+
+        self.assertTrue(res_dict['server']['preemptible'])
 
     @mock.patch('nova.compute.api.API.get_all')
     def test_detail_servers(self, mock_get_all):
